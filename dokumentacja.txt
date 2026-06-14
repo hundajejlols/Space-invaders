@@ -1,0 +1,202 @@
+================================================================================
+                    SPACE INVADERS — DOKUMENTACJA TECHNICZNA
+================================================================================
+
+Gra Space Invaders napisana w czystym JavaScript (ES5/ES6), wykorzystująca
+HTML5 Canvas do renderowania i Web Audio API do dźwięku. Projekt nie korzysta
+z żadnych zewnętrznych bibliotek ani frameworków.
+
+Rozmiar planszy: 800 x 600 pikseli.
+
+
+--------------------------------------------------------------------------------
+1. SPIS PLIKÓW
+--------------------------------------------------------------------------------
+
+index.html      Punkt wejścia. Zawiera element <canvas id="game"> oraz ładuje
+                skrypty w kolejności: renderer.js, enemies.js, audio.js, game.js.
+
+game.js         Główna pętla gry, obsługa wejścia, system kolizji, stan gry.
+
+renderer.js     Warstwa graficzna — rysowanie na Canvas, animacja sprite'ów, HUD.
+
+enemies.js      Logika kosmitów — ruch grupy i sztuczna inteligencja strzelania.
+
+audio.js        Efekty dźwiękowe generowane proceduralnie (Web Audio API).
+
+README.md       Skrócony opis i instrukcja uruchomienia dla użytkownika.
+
+
+--------------------------------------------------------------------------------
+2. ARCHITEKTURA I KOMUNIKACJA MIĘDZY MODUŁAMI
+--------------------------------------------------------------------------------
+
+Moduły są niezależnymi skryptami komunikującymi się przez obiekty globalne na
+obiekcie window. Każdy plik jest opakowany w IIFE (funkcję natychmiast
+wywoływaną), aby nie zaśmiecać globalnej przestrzeni nazw.
+
+Współdzielony stan gry — window.Game:
+
+    window.Game = {
+      state:   'playing' | 'gameover' | 'win',
+      score:   liczba punktów,
+      lives:   liczba żyć (start: 3),
+      player:  { x, y, w, h },
+      bullets: [ { x, y, w, h, vy, from: 'player' | 'enemy' } ],
+      enemies: [ { x, y, w, h, type, alive } ],
+      keys:    { nazwa_klawisza: true/false }
+    }
+
+Wystawiane interfejsy:
+
+    window.Renderer.draw(Game)            — rysuje pojedynczą klatkę
+    window.Enemies.init(Game)             — tworzy siatkę kosmitów
+    window.Enemies.update(Game, dt)       — aktualizuje ruch i strzały wrogów
+    window.Audio.playShoot()              — dźwięk strzału
+    window.Audio.playExplosion()          — dźwięk wybuchu
+    window.Audio.playGameOver()           — melodia przegranej
+    window.Audio.playWin()                — melodia zwycięstwa
+
+Wszystkie wywołania międzymodułowe są zabezpieczone defensywnie (sprawdzanie
+istnienia obiektu i typu funkcji), więc brak lub błąd jednego modułu nie
+przerywa działania pętli gry.
+
+
+--------------------------------------------------------------------------------
+3. GAME.JS — PĘTLA GRY I KOLIZJE
+--------------------------------------------------------------------------------
+
+Pętla główna:
+  - Oparta na requestAnimationFrame z obliczaniem delta time (dt) w sekundach.
+  - dt jest ograniczany (clamp) do maks. 0.1 s, aby uniknąć skoków po
+    przełączeniu karty przeglądarki.
+  - Aktualizacja logiki odbywa się tylko gdy state === 'playing'; renderowanie
+    wykonuje się zawsze.
+
+Sterowanie graczem:
+  - Strzałki lewo/prawo: ruch z prędkością 350 px/s, z ograniczeniem do planszy.
+  - Spacja: strzał z cooldownem 0.35 s. Pocisk leci w górę (vy = -500 px/s).
+  - R: restart gry — działa tylko gdy state != 'playing'.
+  - Klawisze strzałek i spacja mają wyłączone domyślne przewijanie strony.
+
+System kolizji (AABB — Axis-Aligned Bounding Box):
+  - Pocisk gracza vs kosmita: usuwa oba obiekty, +10 punktów, dźwięk wybuchu.
+  - Pocisk wroga vs gracz: usuwa pocisk, -1 życie, dźwięk wybuchu.
+
+Warunki zakończenia (checkEndConditions):
+  - lives <= 0                      -> state = 'gameover'
+  - kosmita dosięga linii gracza    -> state = 'gameover'
+  - brak kosmitów (enemies.length 0)-> state = 'win'
+  Przejście stanu następuje tylko raz (funkcja setState).
+
+Funkcja reset():
+  - Przywraca state='playing', score=0, lives=3, pozycję gracza.
+  - Czyści pociski, kosmitów i wciśnięte klawisze, zeruje cooldown strzału.
+  - Ponownie buduje siatkę kosmitów przez Enemies.init(Game).
+
+Kluczowe stałe:
+  PLAYER_W=50, PLAYER_H=20, PLAYER_SPEED=350, PLAYER_BULLET_SPEED=-500,
+  SHOOT_COOLDOWN=0.35, BULLET_W=4, BULLET_H=12, SCORE_PER_KILL=10.
+
+
+--------------------------------------------------------------------------------
+4. RENDERER.JS — WARSTWA GRAFICZNA
+--------------------------------------------------------------------------------
+
+Wystawia: window.Renderer = { draw(Game) }
+
+Funkcja draw(Game) rysuje całą klatkę:
+  - Pobiera kontekst 2D leniwie i wymusza rozmiar canvasu 800x600.
+  - Czyści tło na czarno i rysuje deterministyczne pole gwiazd (bez migotania).
+  - Rysuje gracza jako pixel-artowy statek.
+  - Rysuje kosmitów jako pixel-art (siatka 11x8 rysowana przez fillRect),
+    pomijając obiekty z alive === false. Kolor zależy od pola type:
+        0 = zielony, 1 = czerwony, 2 = niebieski, 3 = żółty, inne = biały.
+  - Animacja sprite'ów: 2 klatki (ruszające się macki/nogi) przełączane co
+    ~0.4 s na podstawie performance.now(). Licznik trzymany w module.
+  - Pociski: białe dla gracza, czerwone dla from === 'enemy'.
+  - HUD: SCORE (lewy górny róg), LIVES (prawy górny róg).
+  - Ekran końcowy gdy state != 'playing': "YOU WIN" lub "GAME OVER" wraz
+    z podpowiedzią restartu.
+
+Wszystkie odczyty z Game są zabezpieczone (sprawdzanie typów, Array.isArray,
+wartości domyślne). Renderer nie zależy od innych modułów.
+
+
+--------------------------------------------------------------------------------
+5. ENEMIES.JS — RUCH I AI KOSMITÓW
+--------------------------------------------------------------------------------
+
+Wystawia: window.Enemies = { init(Game), update(Game, dt) }
+
+init(Game):
+  - Buduje siatkę 5 rzędów x 11 kolumn, wyśrodkowaną poziomo.
+  - Każdy kosmita: { x, y, w, h, type, alive: true }.
+  - type zależy od rzędu (górne rzędy mają inny typ/kolor niż dolne).
+  - Resetuje kierunek ruchu i timery.
+
+update(Game, dt):
+  - Klasyczny ruch grupy w poziomie. Po dotknięciu krawędzi cała grupa opada
+    o STEP_DOWN pikseli i zmienia kierunek.
+  - Prędkość rośnie liniowo w miarę ubywania żywych kosmitów (od BASE_SPEED
+    do MAX_SPEED) — tym szybciej, im mniej wrogów zostało.
+  - AI strzelania: w losowych odstępach najniższy żywy kosmita w wybranej
+    kolumnie oddaje strzał, dodając pocisk { from:'enemy', vy>0 } do
+    Game.bullets. Odstęp salw maleje wraz z liczbą wrogów.
+  - Gdy kosmita dotrze do poziomu gracza, ustawia Game.state = 'gameover'.
+  - Odporne na !alive (działa zarówno gdy game.js filtruje martwych, jak i
+    gdy ich pozostawia). dt jest ograniczany.
+
+Kluczowe parametry (konfigurowalne na górze pliku):
+  ROWS=5, COLS=11, ENEMY_W=32, ENEMY_H=24, GAP_X=16, GAP_Y=16,
+  MARGIN_TOP=60, STEP_DOWN=20, BASE_SPEED=40, MAX_SPEED=240, EDGE_MARGIN=10,
+  SHOOT_INTERVAL_BASE=1.1, SHOOT_INTERVAL_MIN=0.35,
+  ENEMY_BULLET_W=4, ENEMY_BULLET_H=12, ENEMY_BULLET_VY=240.
+
+
+--------------------------------------------------------------------------------
+6. AUDIO.JS — EFEKTY DŹWIĘKOWE
+--------------------------------------------------------------------------------
+
+Wystawia: window.Audio = { playShoot, playExplosion, playGameOver, playWin }
+
+Dźwięki generowane są proceduralnie przez Web Audio API (bez plików audio):
+  - playShoot      — krótki "laser": oscylator square z częstotliwością
+                     opadającą 900 -> 200 Hz, ~0.15 s.
+  - playExplosion  — biały szum (AudioBuffer) przez filtr lowpass z gasnącą
+                     obwiednią, ~0.4 s.
+  - playGameOver   — opadająca sekwencja tonów sawtooth (A4, F4, C4, G3).
+  - playWin        — wznosząca, wesoła sekwencja square (C5, E5, G5, C6).
+
+Szczegóły techniczne:
+  - Jeden AudioContext z leniwą inicjalizacją (obsługa prefiksu
+    webkitAudioContext dla starszych przeglądarek).
+  - Resume kontekstu przy pierwszym geście użytkownika (nasłuch keydown /
+    click / touchstart) — wymóg polityki autoodtwarzania przeglądarek.
+    Listenery są zdejmowane po pierwszym wywołaniu.
+  - Wszystkie funkcje opakowane w try/catch — brak wsparcia Web Audio nie
+    przerywa działania gry, funkcje cicho zwracają.
+
+UWAGA: globalna nazwa window.Audio celowo nadpisuje natywny konstruktor Audio.
+Jest to świadoma decyzja projektowa — w tym projekcie używamy własnego obiektu
+efektów dźwiękowych zamiast tagów <audio>.
+
+
+--------------------------------------------------------------------------------
+7. STEROWANIE (PODSUMOWANIE)
+--------------------------------------------------------------------------------
+
+  Strzałka w lewo / prawo   — ruch statku
+  Spacja                    — strzał
+  R                         — restart po zakończeniu gry
+
+
+--------------------------------------------------------------------------------
+8. URUCHOMIENIE
+--------------------------------------------------------------------------------
+
+Otwórz plik index.html w dowolnej nowoczesnej przeglądarce. Gra nie wymaga
+serwera HTTP ani procesu budowania. Dźwięk uruchomi się po pierwszym
+naciśnięciu klawisza.
+
+================================================================================
